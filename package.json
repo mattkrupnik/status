@@ -1,0 +1,14 @@
+{
+  "name": "status",
+  "version": "1.0.0",
+  "keywords": [],
+  "author": "Matt Krupnik",
+  "license": "GPL-3.0",
+  "description": "Check X1 Validator Status",
+  "dependencies": {
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  }
+}
