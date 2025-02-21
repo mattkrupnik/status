@@ -14,24 +14,24 @@ The application provides an HTTP API (/status) to access the current status of t
 
 ## Installation
 
-1. Clone the repository:
+**1. Clone the repository:**
 ```
 git clone https://github.com/mattkrupnik/status.git
 ```
 
-2. Navigate into the project directory:
+**2. Navigate into the project directory:**
 ```
 cd status
 ```
 
-3. Install dependencies:
+**3. Install dependencies:**
 
 **Node.js is required to run this application.** Once Node.js is installed, run the following command to install the necessary dependencies:
 ```
 npm install
 ```
 
-4. Copy the `.env.sample` file to create the `.env` file:
+**4. Copy the `.env.sample` file to create the `.env` file:**
 ```
 cp .env.sample .env
 ```
@@ -50,29 +50,47 @@ LOCAL_HOST=localhost
 - `MAX_SLOT_LAG`: The maximum acceptable slot lag for the validator.
 - `LOCAL_HOST`: The host of the application.
 
-5. Allow access to the application port
+**5. Allow access to the application port**
 ```shell
 sudo ufw enable
 sudo ufw allow 3340/tcp
 sudo ufw reload
 ```
-6. Run the application:
+**6. Run the application:**
 ```shell
-nohup node status &
+pm2 start status.js --name validator-status
+```
+You can **define** your custom name instead of `validator-status`.
+
+**7. Save the PM2 process list and enable auto-start on system reboot**
+```shell
+pm2 save
+pm2 startup
 ```
 The server will start on the specified port (default: 3340).
-## Stopping the Application
-To stop the application:
+## Stopping and Managing the Application
 
-1. Find the process ID (PID) of the running application:
+To stop the application
 ```shell
-ps aux | grep status
+pm2 stop validator-status
 ```
-2. Kill the process:
+To restart the application
 ```shell
-kill <PID>
+pm2 restart validator-status
 ```
-Replace `<PID>` with the actual process ID.
+To delete the application from PM2
+```shell
+pm2 delete validator-status
+```
+To check the application logs
+```shell
+pm2 logs validator-status
+```
+To check the status of all running PM2 applications
+```shell
+pm2 list
+```
+
 ## API
 ### GET `/status`
 This endpoint provides the current status of the validator.
