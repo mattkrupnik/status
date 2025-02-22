@@ -29,7 +29,7 @@ let lastAlertTime = 0;
 async function sendTelegramMessage(message) {
 
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-        console.log("⚠️ Telegram Bot Token or Chat ID is missing, skipping message.");
+        logWithTimestamp("⚠️ Telegram Bot Token or Chat ID is missing, skipping message.");
         return; // Exit the function early without sending the message
     }
 
@@ -39,17 +39,13 @@ async function sendTelegramMessage(message) {
     try {
         const response = await axios.post(url, payload);
         if (!response.data.ok) {
-            console.error("❌ Error sending Telegram message:", response.data.description);
+            logWithTimestamp("❌ Error sending Telegram message:", response.data.description);
         } else {
-            console.log("✅ Telegram message sent");
+            logWithTimestamp("✅ Telegram message sent");
         }
     } catch (error) {
-        console.error("❌ Error sending Telegram message:", error.message);
+        logWithTimestamp("❌ Error sending Telegram message:", error.message);
     }
-}
-
-function logMessage(date, validatorStatus) {
-    console.log(`💬 [${date.toISOString()}]`, JSON.stringify(validatorStatus, null, 2));
 }
 
 async function getValidatorSlot() {
@@ -57,7 +53,7 @@ async function getValidatorSlot() {
         const response = await axios.post(RPC_URL, {jsonrpc: "2.0", id: 1, method: "getSlot"});
         return response.data.result;
     } catch (error) {
-        console.error("❌ Error fetching validator slot:", error.message);
+        logWithTimestamp("❌ Error fetching validator slot:", error.message);
         return null;
     }
 }
@@ -67,7 +63,7 @@ async function getFinalizedSlot() {
         const response = await axios.post(RPC_URL, {jsonrpc: "2.0", id: 1, method: "getMaxRetransmitSlot"});
         return response.data.result;
     } catch (error) {
-        console.error("❌ Error fetching finalized slot:", error.message);
+        logWithTimestamp("❌ Error fetching finalized slot:", error.message);
         return null;
     }
 }
@@ -83,7 +79,7 @@ async function getBlockHash() {
         });
         return response.data.result ? response.data.result.blockhash : null;
     } catch (error) {
-        console.error("❌ Error fetching block hash:", error.message);
+        logWithTimestamp("❌ Error fetching block hash:", error.message);
         return null;
     }
 }
@@ -109,22 +105,21 @@ async function monitorValidatorStatus() {
 
     if (lastValidatorStatus && lastValidatorStatus.status !== validatorStatus.status) {
         const now = Date.now();
-        const date = new Date(now);
 
         // Check if the status is healthy
         if (validatorStatus.status === STATUS_HEALTHY) {
             await sendTelegramMessage(`✅ Status: ${STATUS_HEALTHY}`);
-            logMessage(date, validatorStatus);
+            logWithTimestamp(validatorStatus);
         }
         // Check if the status is lagging
         else if (validatorStatus.status === STATUS_LAGGING) {
             await sendTelegramMessage(`⚠️ Status: ${STATUS_LAGGING}\n💬 ${validatorStatus.message}`);
-            logMessage(date, validatorStatus);
+            logWithTimestamp(validatorStatus);
         }
         // Check if the status is offline
         else if (validatorStatus.status === STATUS_OFFLINE) {
             await sendTelegramMessage(`❌ Status: ${STATUS_OFFLINE}\n💬 ${validatorStatus.message}`);
-            logMessage(date, validatorStatus);
+            logWithTimestamp(validatorStatus);
         }
 
         lastAlertTime = now;
@@ -144,29 +139,39 @@ function getUptime() {
     return `${hours}h ${minutes}m ${seconds}s`;
 }
 
+function logWithTimestamp(message) {
+    const now = new Date().toISOString();
+
+    if (typeof message === 'object' && message !== null) {
+        message = JSON.stringify(message, null, 2);
+    }
+
+    console.log(`[${now}] ${message}`);
+}
+
 function connectWebSocket() {
     if (ws && ws.readyState === WebSocket.OPEN) {
-        console.log("✅ WebSocket already connected");
+        logWithTimestamp("✅ WebSocket already connected");
         return;
     }
 
-    console.log("🔌 Connecting to WebSocket...");
+    logWithTimestamp("🔌 Connecting to WebSocket...");
     ws = new WebSocket(WS_URL);
 
     ws.on("open", () => {
-        console.log("✅ WebSocket connected");
+        logWithTimestamp("✅ WebSocket connected");
         isWebSocketConnected = true;
         uptimeStart = Date.now();
     });
 
     ws.on("close", () => {
-        console.log("❌ WebSocket disconnected! Reconnecting...");
+        logWithTimestamp("❌ WebSocket disconnected! Reconnecting...");
         isWebSocketConnected = false;
         setTimeout(connectWebSocket, 5000);
     });
 
     ws.on("error", (err) => {
-        console.error("⚠️ WebSocket error:", err.message);
+        logWithTimestamp("⚠️ WebSocket error:", err.message);
     });
 }
 
@@ -192,12 +197,12 @@ connectWebSocket();
 
 try {
     status.listen(PORT, () => {
-        console.log(`🚀 X1 Validator status checker running on ${process.env.LOCAL_HOST}:${PORT}`);
+        logWithTimestamp(`🚀 X1 Validator status checker running on ${process.env.LOCAL_HOST}:${PORT}`);
         sendTelegramMessage('🚀 X1 Validator Status Checker has started! Monitoring the validator status...')
-            .then(() => console.log("✅ Startup message sent to Telegram"))
-            .catch((err) => console.error("❌ Failed to send startup message:", err.message));
+            .then(() => logWithTimestamp("✅ Startup message sent to Telegram"))
+            .catch((err) => logWithTimestamp("❌ Failed to send startup message:", err.message));
     });
 } catch (error) {
-    console.error("❌ Failed to start server:", error.message);
+    logWithTimestamp("❌ Failed to start server:", error.message);
     process.exit(1);
 }
