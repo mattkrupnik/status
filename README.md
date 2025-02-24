@@ -42,7 +42,6 @@ You can modify `.env` values as needed:
 PORT=3340
 RPC_URL=http://localhost:8899
 WS_URL=ws://localhost:8900
-MAX_SLOT_LAG=100
 LOCAL_HOST=localhost
 
 # Telegram configuration
@@ -50,14 +49,13 @@ TELEGRAM_BOT_TOKEN=example:1234567890
 TELEGRAM_CHAT_ID=12345667890
 TELEGRAM_API_URL=https://api.telegram.org/bot
 
-# Notification interval and cooldowns
+# Notification interval
 CHECK_INTERVAL=10000
 ```
 ### 5️⃣ Environment Variable Descriptions
 - `PORT`: The port on which the server will run.
 - `RPC_URL`: The RPC URL of the validator to monitor.
 - `WS_URL`: The WebSocket URL for the validator.
-- `MAX_SLOT_LAG`: The maximum acceptable slot lag for the validator.
 - `LOCAL_HOST`: The host of the application.
 - `TELEGRAM_API_URL`: The Telegram Bot API URL
 - `TELEGRAM_BOT_TOKEN`: The bot token you get from BotFather.
@@ -144,11 +142,10 @@ Fetch the current status of the validator.
 ```json
 {
     "status": "healthy",
-    "message": "Validator is synced",
-    "validatorSlot": 53941760,
+    "message": "Node is behind by 276 slots'",
+    "processedSlot": 53941760,
     "finalizedSlot": 53941765,
-    "slotLag": 5,
-    "blockHash": "abcd1234efgh5678",
+    "confirmedSlot": 53941765,
     "uptime": "54h 10m 45s",
     "websocket": "connected"
 }
@@ -159,8 +156,7 @@ Fetch the current status of the validator.
 - `message` – Description of the validator’s status.
 - `validatorSlot` – The current validator slot.
 - `finalizedSlot` – The latest finalized slot.
-- `slotLag` – Difference between finalized and validator slots.
-- `blockHash` – The block hash of the current slot.
+- `confirmedSlot` – The latest confirmed slot.
 - `uptime` – How long the application has been running.
 - `websocket` – Connection status (`connected`, `disconnected`).
 
@@ -175,7 +171,6 @@ The application will attempt to connect to the WebSocket URL specified in `.env`
 ## 🔧 Troubleshooting
 
 - **Port and Firewall Issues** – Ensure the PORT in `.env` is open and accessible (`ufw allow`).
-- **Validator Slot Lag** – If behind by more than `MAX_SLOT_LAG`, status becomes **lagging**. Increase `MAX_SLOT_LAG` if needed.
 - **WebSocket Issues** – Ensure `WS_URL` is correct and accessible. The app will retry every **5 seconds** if disconnected.
 
 ---
