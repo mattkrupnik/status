@@ -4,14 +4,12 @@ The application provides an HTTP API (`/status`) to access the current status of
 
 ## 📌 Features
 
-- Fetches the current validator slot.
-- Fetches the finalized slot.
-- Fetches the current block hash for the validator's slot.
+- Sends Telegram notifications when the validator status changes.
+- Returns a status of the validator (`healthy`, `lagging`, `healthy unknown`, or `offline`).
+- Checks if the validator is lagging behind (based on slots).
+- Fetches the finalized, confirmed, processed slots.
 - Monitors WebSocket connection to the validator.
 - Tracks application uptime.
-- Checks if the validator is lagging behind (based on slot lag).
-- Returns a status of the validator (`healthy`, `lagging`, or `offline`).
-- Sends Telegram notifications when the validator status changes.
 
 ---
 
@@ -29,6 +27,7 @@ cd status
 
 ### 3️⃣ Install dependencies
 > **Node.js is required to run this application.**
+> https://nodejs.org/en/download
 ```sh
 npm install
 ```
@@ -69,6 +68,8 @@ sudo ufw reload
 ```
 
 ### 7️⃣ Run the application
+> **PM2 documentation**
+> https://pm2.keymetrics.io/docs/usage/quick-start/
 ```sh
 pm2 start status.js --name validator-status
 ```
@@ -127,6 +128,7 @@ The server will start on the specified port (default: 3340).
 ### 📡 Set Up Telegram Alerts
 - ⚠️ **Status: Lagging** – If the validator is behind too many slots.
 - ✅ **Status: Healthy** – If the validator is synced and healthy.
+- ❌ **Status: Healthy Unknown** – If the validator is unresponsive or healthy is unknown.
 - ❌ **Status: Offline** – If the validator is unresponsive or offline.
 
 ![Example Notification](preview/example_notification.png)
@@ -143,20 +145,23 @@ Fetch the current status of the validator.
 {
     "status": "healthy",
     "message": "Node is behind by 276 slots'",
-    "processedSlot": 53941760,
+    "numSlotsBehind": 276,
     "finalizedSlot": 53941765,
     "confirmedSlot": 53941765,
+    "processedSlot": 53941760,
     "uptime": "54h 10m 45s",
     "websocket": "connected"
 }
 ```
+![example_api_status.png](preview/example_api_status.png)
 
 **Fields:**
-- `status` – The health status (`healthy`, `lagging`, `offline`).
+- `status` – The health status (`healthy`, `lagging`, `healthy unknown`, `offline`).
 - `message` – Description of the validator’s status.
-- `validatorSlot` – The current validator slot.
+- `numSlotsBehind` - The number of behind slots.
 - `finalizedSlot` – The latest finalized slot.
 - `confirmedSlot` – The latest confirmed slot.
+- `processedSlot` – The current processed slot.
 - `uptime` – How long the application has been running.
 - `websocket` – Connection status (`connected`, `disconnected`).
 
