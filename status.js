@@ -7,7 +7,9 @@ const {
     RPC_URL,
     WS_URL,
     LOCAL_HOST,
+    MAX_WS_RECONNECT_ATTEMPTS,
     CHECK_INTERVAL,
+    MAX_SLOTS_BEHIND_NOTIFICATIONS,
     STATUS_HEALTHY,
     STATUS_HEALTHY_UNKNOWN,
     STATUS_LAGGING,
@@ -22,11 +24,12 @@ let uptimeStart = Date.now();
 let isWebSocketConnected = false;
 let ws;
 let lastValidatorStatus = null;
-let lastAlertTime = 0;
 let wsReconnectAttempts = 0;
+let isProcessing = false;
+let lastNumSlotsBehind = null;
+let slotsBehindCounter = 0;
 
-async function sendTelegramMessage(message, logData = {}) {
-
+async function sendTelegramMessage(message, logData = null) {
     if (!TELEGRAM_BOT_TOKEN && !TELEGRAM_CHAT_ID) {
         logWithTimestamp("⚠️ Telegram Bot Token or Chat ID is missing, skipping message.");
         return;
@@ -41,7 +44,9 @@ async function sendTelegramMessage(message, logData = {}) {
             logWithTimestamp("❌ Error sending Telegram message:", response.data.description);
         } else {
             logWithTimestamp("✅ Telegram message sent");
-            logWithTimestamp(logData);
+            if (logData) {
+                logWithTimestamp(logData);
+            }
         }
     } catch (error) {
         logWithTimestamp("❌ Error sending Telegram message:", error.message);
@@ -80,17 +85,12 @@ async function getHealth() {
         });
 
         const {data} = response;
-
         if (data.result === 'ok') {
             return {status: STATUS_HEALTHY};
         }
 
-        if (data.error) {
+        if (data.error?.data?.numSlotsBehind > 0) {
             const {message, data: errorData} = data.error;
-            if (message === 'Node is unhealthy') {
-                return {status: STATUS_HEALTHY_UNKNOWN, message: message};
-            }
-
             return {status: STATUS_LAGGING, message: message, numSlotsBehind: errorData?.numSlotsBehind ?? 0};
         }
 
@@ -101,37 +101,54 @@ async function getHealth() {
 }
 
 async function monitorValidatorStatus() {
-    const healthStatus = await getHealth();
-    const sendMessage = (lastValidatorStatus && lastValidatorStatus !== healthStatus.status) || healthStatus.status === STATUS_LAGGING;
-
-    if (sendMessage) {
-        const now = Date.now();
-
-        // Check if the status is healthy
-        if (healthStatus.status === STATUS_HEALTHY) {
-            await sendTelegramMessage(`✅ Status: ${STATUS_HEALTHY}`, healthStatus);
-        }
-        // Check if the status is lagging
-        else if (healthStatus.status === STATUS_LAGGING) {
-            await sendTelegramMessage(`⚠️ Status: ${STATUS_LAGGING}\n💬 ${healthStatus.message}`, healthStatus);
-        }
-        // Check if the status is healthy unknown
-        else if (healthStatus.status === STATUS_HEALTHY_UNKNOWN) {
-            await sendTelegramMessage(`❌ Status: ${STATUS_HEALTHY_UNKNOWN}`, healthStatus);
-        }
-        // Check if the status is offline
-        else if (healthStatus.status === STATUS_OFFLINE) {
-            await sendTelegramMessage(`❌ Status: ${STATUS_OFFLINE}`, healthStatus);
-        }
-
-        lastAlertTime = now;
+    if (isProcessing) {
+        console.log("⏳ monitorValidatorStatus is already running, skipping...");
+        return;
     }
 
-    lastValidatorStatus = healthStatus.status;
-}
+    isProcessing = true;
 
-if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-    setInterval(monitorValidatorStatus, CHECK_INTERVAL);
+    try {
+        const healthStatus = await getHealth();
+
+        let message = "";
+
+        if (lastValidatorStatus === null || lastValidatorStatus !== healthStatus.status) {
+            if (healthStatus.status === STATUS_HEALTHY) {
+                message = `✅ Status: ${STATUS_HEALTHY}`;
+            } else if (healthStatus.status === STATUS_LAGGING) {
+                message = `⚠️ Status: ${STATUS_LAGGING}\n💬 ${healthStatus.message}`;
+            } else if (healthStatus.status === STATUS_HEALTHY_UNKNOWN) {
+                message = `❌ Status: ${STATUS_HEALTHY_UNKNOWN}`;
+            } else if (healthStatus.status === STATUS_OFFLINE) {
+                message = `❌ Status: ${STATUS_OFFLINE}`;
+            }
+
+            lastNumSlotsBehind = healthStatus.numSlotsBehind ?? 0;
+            slotsBehindCounter = 0;
+        } else if (healthStatus.status === STATUS_LAGGING && healthStatus.numSlotsBehind !== lastNumSlotsBehind) {
+            if (slotsBehindCounter < MAX_SLOTS_BEHIND_NOTIFICATIONS) {
+                message = `⚠️ Slots behind: ${healthStatus.numSlotsBehind}`;
+                slotsBehindCounter++;
+            } else if (slotsBehindCounter === MAX_SLOTS_BEHIND_NOTIFICATIONS) {
+                message = "⚠️ Validator is behind, we will inform you when the status changes.";
+                slotsBehindCounter++;
+            }
+            lastNumSlotsBehind = healthStatus.numSlotsBehind;
+        }
+
+        if (message) {
+            await sendTelegramMessage(message, healthStatus);
+        }
+
+        lastValidatorStatus = healthStatus.status;
+
+    } catch (err) {
+        console.log(`❌ Error in monitorValidatorStatus: ${err.message}`);
+    } finally {
+        isProcessing = false;
+        setTimeout(monitorValidatorStatus, CHECK_INTERVAL);
+    }
 }
 
 function connectWebSocket() {
@@ -140,7 +157,12 @@ function connectWebSocket() {
         return;
     }
 
-    logWithTimestamp("🔌 Connecting to WebSocket...");
+    if (wsReconnectAttempts >= MAX_WS_RECONNECT_ATTEMPTS) {
+        logWithTimestamp("❌ Max WebSocket reconnect attempts reached. Stopping reconnection.");
+        return;
+    }
+
+    logWithTimestamp(`🔌 Connecting to WebSocket... (Attempt ${wsReconnectAttempts + 1}/${MAX_WS_RECONNECT_ATTEMPTS})`);
     ws = new WebSocket(WS_URL);
 
     ws.on("open", () => {
@@ -151,15 +173,24 @@ function connectWebSocket() {
     });
 
     ws.on("close", () => {
-        logWithTimestamp("❌ WebSocket disconnected! Reconnecting...");
+        logWithTimestamp("❌ WebSocket disconnected!");
+
         isWebSocketConnected = false;
-        setTimeout(connectWebSocket, Math.min(5000 * Math.pow(2, wsReconnectAttempts), 30000));
         wsReconnectAttempts += 1;
+
+        if (wsReconnectAttempts < MAX_WS_RECONNECT_ATTEMPTS) {
+            const retryDelay = 15000;
+            logWithTimestamp(`🔄 Reconnecting in ${retryDelay / 1000} seconds...`);
+            setTimeout(connectWebSocket, retryDelay);
+        } else {
+            logWithTimestamp("⛔ Stopped WebSocket reconnection after maximum attempts.");
+        }
     });
 
     ws.on("error", (err) => {
-        sendTelegramMessage(`❌ Status: ${STATUS_OFFLINE}`);
-        logWithTimestamp("⚠️ WebSocket error:", err.message);
+        logWithTimestamp("⚠️ WebSocket error: " + err.message);
+        sendTelegramMessage(`❌ Cannot connect to WebSocket server (Attempt ${wsReconnectAttempts + 1}/${MAX_WS_RECONNECT_ATTEMPTS})`)
+            .catch((err) => logWithTimestamp("❌ Error sending Telegram message for WebSocket error:", err.message));
     });
 }
 
@@ -181,13 +212,21 @@ status.get("/status", async (req, res) => {
 
 connectWebSocket();
 
-try {
-    status.listen(PORT, () => {
-        sendTelegramMessage('🚀 X1 Validator Status Checker has started! Monitoring the validator status...')
-            .then(() => logWithTimestamp(`🚀 X1 Validator status checker running on ${LOCAL_HOST}:${PORT}`))
-            .catch((err) => logWithTimestamp("❌ Failed to send startup message:", err.message));
-    });
-} catch (error) {
-    logWithTimestamp("❌ Failed to start server:", error.message);
+status.listen(PORT, async () => {
+    try {
+        await sendTelegramMessage('🚀 X1 Validator Status Checker has started! Monitoring the validator status...');
+        logWithTimestamp(`🚀 X1 Validator status checker running on ${LOCAL_HOST}:${PORT}`);
+
+        if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+            monitorValidatorStatus().catch(err => logWithTimestamp("❌ Error in monitorValidatorStatus:", err.message));
+        }
+
+    } catch (err) {
+        logWithTimestamp("❌ Failed to send startup message:", err.message);
+    }
+});
+
+status.on("error", (err) => {
+    logWithTimestamp("❌ Failed to start server:", err.message);
     process.exit(1);
-}
+});

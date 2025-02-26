@@ -4,6 +4,7 @@ const PORT = process.env.PORT;
 const RPC_URL = process.env.RPC_URL
 const WS_URL = process.env.WS_URL
 const LOCAL_HOST = process.env.LOCAL_HOST
+const MAX_WS_RECONNECT_ATTEMPTS = process.env.MAX_WS_RECONNECT_ATTEMPTS
 
 // Statuses
 const STATUS_HEALTHY = "healthy";
@@ -18,13 +19,16 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 // Notification interval
 const CHECK_INTERVAL = parseInt(process.env.CHECK_INTERVAL, 10) || 10000;
+const MAX_SLOTS_BEHIND_NOTIFICATIONS = parseInt(process.env.MAX_SLOTS_BEHIND_NOTIFICATIONS, 10) ;
 
 module.exports = {
     PORT,
     RPC_URL,
     WS_URL,
     LOCAL_HOST,
+    MAX_WS_RECONNECT_ATTEMPTS,
     CHECK_INTERVAL,
+    MAX_SLOTS_BEHIND_NOTIFICATIONS,
     STATUS_HEALTHY,
     STATUS_HEALTHY_UNKNOWN,
     STATUS_LAGGING,
