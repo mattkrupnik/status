@@ -8,6 +8,7 @@ const {
     WS_URL,
     LOCAL_HOST,
     MAX_WS_RECONNECT_ATTEMPTS,
+    RPC_TIMEOUT_CONNECTION,
     CHECK_INTERVAL,
     MAX_SLOTS_BEHIND_NOTIFICATIONS,
     STATUS_HEALTHY,
@@ -28,10 +29,11 @@ let wsReconnectAttempts = 0;
 let isProcessing = false;
 let lastNumSlotsBehind = null;
 let slotsBehindCounter = 0;
+let rpcErrorNotified = false;
 
 async function sendTelegramMessage(message, logData = null) {
     if (!TELEGRAM_BOT_TOKEN && !TELEGRAM_CHAT_ID) {
-        logWithTimestamp("⚠️ Telegram Bot Token or Chat ID is missing, skipping message.");
+        logWithTimestamp("Telegram Bot Token or Chat ID is missing, skipping message.");
         return;
     }
 
@@ -41,15 +43,15 @@ async function sendTelegramMessage(message, logData = null) {
     try {
         const response = await axios.post(url, payload);
         if (!response.data.ok) {
-            logWithTimestamp("❌ Error sending Telegram message:", response.data.description);
+            logWithTimestamp("Error sending Telegram message:", response.data.description);
         } else {
-            logWithTimestamp("✅ Telegram message sent");
+            logWithTimestamp("Telegram message sent");
             if (logData) {
                 logWithTimestamp(logData);
             }
         }
     } catch (error) {
-        logWithTimestamp("❌ Error sending Telegram message:", error.message);
+        logWithTimestamp("Error sending Telegram message:", error.message);
     }
 }
 
@@ -61,7 +63,7 @@ async function getSlotWithCommitment(commitment) {
 
         return response.data.result;
     } catch (error) {
-        logWithTimestamp(`❌ Error fetching ${commitment} slot:`, error.message);
+        logWithTimestamp(`Error fetching ${commitment} slot:`, error.message);
         return null;
     }
 }
@@ -78,31 +80,50 @@ async function fetchSlots() {
     }
 }
 
-async function getHealth() {
+async function fetchRpcHealth() {
     try {
         const response = await axios.post(RPC_URL, {
             jsonrpc: "2.0", id: 1, method: "getHealth"
-        });
+        }, { timeout: RPC_TIMEOUT_CONNECTION });
 
-        const {data} = response;
-        if (data.result === 'ok') {
-            return {status: STATUS_HEALTHY};
+        rpcErrorNotified = false;
+        return response.data;
+    } catch (error) {
+        const logData = `🚨 RPC request failed: ${error.message}`;
+        if (!rpcErrorNotified) {
+            await sendTelegramMessage("🚨 RPC connection failure! Unable to reach the RPC endpoint.", logData);
+            rpcErrorNotified = true;
         }
 
-        if (data.error?.data?.numSlotsBehind > 0) {
-            const {message, data: errorData} = data.error;
-            return {status: STATUS_LAGGING, message: message, numSlotsBehind: errorData?.numSlotsBehind ?? 0};
-        }
-
-        return {status: STATUS_HEALTHY_UNKNOWN};
-    } catch (err) {
-        return {status: STATUS_OFFLINE};
+        return null;
     }
+}
+
+async function getHealth() {
+    const data = await fetchRpcHealth();
+
+    if (!data) {
+        return { status: STATUS_OFFLINE };
+    }
+
+    if (data.result === "ok") {
+        return { status: STATUS_HEALTHY };
+    }
+
+    if (data.error?.data?.numSlotsBehind > 0) {
+        return {
+            status: STATUS_LAGGING,
+            message: data.error.message,
+            numSlotsBehind: data.error.data.numSlotsBehind ?? 0
+        };
+    }
+
+    return { status: STATUS_HEALTHY_UNKNOWN };
 }
 
 async function monitorValidatorStatus() {
     if (isProcessing) {
-        console.log("⏳ monitorValidatorStatus is already running, skipping...");
+        logWithTimestamp("⏳ monitorValidatorStatus is already running, skipping...");
         return;
     }
 
@@ -144,7 +165,7 @@ async function monitorValidatorStatus() {
         lastValidatorStatus = healthStatus.status;
 
     } catch (err) {
-        console.log(`❌ Error in monitorValidatorStatus: ${err.message}`);
+        console.log(`Error in monitorValidatorStatus: ${err.message}`);
     } finally {
         isProcessing = false;
         setTimeout(monitorValidatorStatus, CHECK_INTERVAL);
@@ -153,12 +174,12 @@ async function monitorValidatorStatus() {
 
 function connectWebSocket() {
     if (ws && ws.readyState === WebSocket.OPEN) {
-        logWithTimestamp("✅ WebSocket already connected");
+        logWithTimestamp("WebSocket already connected");
         return;
     }
 
     if (wsReconnectAttempts >= MAX_WS_RECONNECT_ATTEMPTS) {
-        logWithTimestamp("❌ Max WebSocket reconnect attempts reached. Stopping reconnection.");
+        logWithTimestamp("Max WebSocket reconnect attempts reached. Stopping reconnection.");
         return;
     }
 
@@ -166,31 +187,31 @@ function connectWebSocket() {
     ws = new WebSocket(WS_URL);
 
     ws.on("open", () => {
-        logWithTimestamp("✅ WebSocket connected");
+        logWithTimestamp("WebSocket connected");
         isWebSocketConnected = true;
         uptimeStart = Date.now();
         wsReconnectAttempts = 0;
     });
 
     ws.on("close", () => {
-        logWithTimestamp("❌ WebSocket disconnected!");
+        logWithTimestamp("WebSocket disconnected!");
 
         isWebSocketConnected = false;
         wsReconnectAttempts += 1;
 
         if (wsReconnectAttempts < MAX_WS_RECONNECT_ATTEMPTS) {
             const retryDelay = 15000;
-            logWithTimestamp(`🔄 Reconnecting in ${retryDelay / 1000} seconds...`);
+            logWithTimestamp(`Reconnecting in ${retryDelay / 1000} seconds...`);
             setTimeout(connectWebSocket, retryDelay);
         } else {
-            logWithTimestamp("⛔ Stopped WebSocket reconnection after maximum attempts.");
+            logWithTimestamp("Stopped WebSocket reconnection after maximum attempts.");
         }
     });
 
     ws.on("error", (err) => {
-        logWithTimestamp("⚠️ WebSocket error: " + err.message);
-        sendTelegramMessage(`❌ Cannot connect to WebSocket server (Attempt ${wsReconnectAttempts + 1}/${MAX_WS_RECONNECT_ATTEMPTS})`)
-            .catch((err) => logWithTimestamp("❌ Error sending Telegram message for WebSocket error:", err.message));
+        logWithTimestamp("WebSocket error: " + err.message);
+        sendTelegramMessage(`🚨 Cannot connect to WebSocket server (Attempt ${wsReconnectAttempts + 1}/${MAX_WS_RECONNECT_ATTEMPTS})`)
+            .catch((err) => logWithTimestamp("Error sending Telegram message for WebSocket error:", err.message));
     });
 }
 
@@ -218,15 +239,15 @@ status.listen(PORT, async () => {
         logWithTimestamp(`🚀 X1 Validator status checker running on ${LOCAL_HOST}:${PORT}`);
 
         if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-            monitorValidatorStatus().catch(err => logWithTimestamp("❌ Error in monitorValidatorStatus:", err.message));
+            monitorValidatorStatus().catch(err => logWithTimestamp("Error in monitorValidatorStatus:", err.message));
         }
 
     } catch (err) {
-        logWithTimestamp("❌ Failed to send startup message:", err.message);
+        logWithTimestamp("Failed to send startup message:", err.message);
     }
 });
 
 status.on("error", (err) => {
-    logWithTimestamp("❌ Failed to start server:", err.message);
+    logWithTimestamp("Failed to start server:", err.message);
     process.exit(1);
 });

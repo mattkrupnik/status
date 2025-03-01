@@ -42,6 +42,8 @@ PORT=3340
 RPC_URL=http://localhost:8899
 WS_URL=ws://localhost:8900
 LOCAL_HOST=localhost
+MAX_WS_RECONNECT_ATTEMPTS=10
+RPC_TIMEOUT_CONNECTION=180000
 
 # Telegram configuration
 TELEGRAM_BOT_TOKEN=example:1234567890
@@ -50,16 +52,20 @@ TELEGRAM_API_URL=https://api.telegram.org/bot
 
 # Notification interval
 CHECK_INTERVAL=10000
+MAX_SLOTS_BEHIND_NOTIFICATIONS=10
 ```
 ### 5️⃣ Environment Variable Descriptions
 - `PORT`: The port on which the server will run.
 - `RPC_URL`: The RPC URL of the validator to monitor.
 - `WS_URL`: The WebSocket URL for the validator.
 - `LOCAL_HOST`: The host of the application.
+- `MAX_WS_RECONNECT_ATTEMPTS`: WS recconect attempts.
+- `RPC_TIMEOUT_CONNECTION`: time the system waits for an RPC response before marking the request as failed. 
 - `TELEGRAM_API_URL`: The Telegram Bot API URL
 - `TELEGRAM_BOT_TOKEN`: The bot token you get from BotFather.
 - `TELEGRAM_CHAT_ID`: The chat ID where messages will be sent.
 - `CHECK_INTERVAL`: How often to check the validator's status (in milliseconds).
+- `MAX_SLOTS_BEHIND_NOTIFICATIONS`: Limits the number of alerts sent when the validator is lagging behind to prevent excessive notifications
 ### 6️⃣ Allow access to the application port
 ```sh
 sudo ufw enable
