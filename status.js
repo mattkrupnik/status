@@ -1,36 +1,40 @@
-require('dotenv').config();
-
 const express = require("express");
 const axios = require("axios");
 const WebSocket = require("ws");
-
 const status = express();
-const PORT = process.env.PORT;
-
-const RPC_URL = process.env.RPC_URL
-const WS_URL = process.env.WS_URL
-const MAX_SLOT_LAG = parseInt(process.env.MAX_SLOT_LAG, 10);
-const CHECK_INTERVAL = parseInt(process.env.CHECK_INTERVAL, 10);
-
-const STATUS_HEALTHY = "healthy";
-const STATUS_LAGGING = "lagging";
-const STATUS_OFFLINE = "offline";
-
-const TELEGRAM_API_URL = process.env.TELEGRAM_API_URL;
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID
+const {
+    PORT,
+    RPC_URL,
+    WS_URL,
+    LOCAL_HOST,
+    MAX_WS_RECONNECT_ATTEMPTS,
+    RPC_TIMEOUT_CONNECTION,
+    CHECK_INTERVAL,
+    MAX_SLOTS_BEHIND_NOTIFICATIONS,
+    STATUS_HEALTHY,
+    STATUS_HEALTHY_UNKNOWN,
+    STATUS_LAGGING,
+    STATUS_OFFLINE,
+    TELEGRAM_API_URL,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID
+} = require('./env');
+const {logWithTimestamp, getUptime} = require('./helper');
 
 let uptimeStart = Date.now();
 let isWebSocketConnected = false;
 let ws;
 let lastValidatorStatus = null;
-let lastAlertTime = 0;
+let wsReconnectAttempts = 0;
+let isProcessing = false;
+let lastNumSlotsBehind = null;
+let slotsBehindCounter = 0;
+let rpcErrorNotified = false;
 
-async function sendTelegramMessage(message) {
-
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-        logWithTimestamp("⚠️ Telegram Bot Token or Chat ID is missing, skipping message.");
-        return; // Exit the function early without sending the message
+async function sendTelegramMessage(message, logData = null) {
+    if (!TELEGRAM_BOT_TOKEN && !TELEGRAM_CHAT_ID) {
+        logWithTimestamp("Telegram Bot Token or Chat ID is missing, skipping message.");
+        return;
     }
 
     const url = `${TELEGRAM_API_URL}${TELEGRAM_BOT_TOKEN}/sendMessage`;
@@ -39,152 +43,186 @@ async function sendTelegramMessage(message) {
     try {
         const response = await axios.post(url, payload);
         if (!response.data.ok) {
-            logWithTimestamp("❌ Error sending Telegram message:", response.data.description);
+            logWithTimestamp("Error sending Telegram message:", response.data.description);
         } else {
-            logWithTimestamp("✅ Telegram message sent");
+            logWithTimestamp("Telegram message sent");
+            if (logData) {
+                logWithTimestamp(logData);
+            }
         }
     } catch (error) {
-        logWithTimestamp("❌ Error sending Telegram message:", error.message);
+        logWithTimestamp("Error sending Telegram message:", error.message);
     }
 }
 
-async function getValidatorSlot() {
+async function getSlotWithCommitment(commitment) {
     try {
-        const response = await axios.post(RPC_URL, {jsonrpc: "2.0", id: 1, method: "getSlot"});
-        return response.data.result;
-    } catch (error) {
-        logWithTimestamp("❌ Error fetching validator slot:", error.message);
-        return null;
-    }
-}
-
-async function getFinalizedSlot() {
-    try {
-        const response = await axios.post(RPC_URL, {jsonrpc: "2.0", id: 1, method: "getMaxRetransmitSlot"});
-        return response.data.result;
-    } catch (error) {
-        logWithTimestamp("❌ Error fetching finalized slot:", error.message);
-        return null;
-    }
-}
-
-async function getBlockHash() {
-    try {
-        const validatorSlot = await getValidatorSlot();
         const response = await axios.post(RPC_URL, {
-            jsonrpc: "2.0",
-            id: 1,
-            method: "getBlock",
-            params: [validatorSlot]
+            jsonrpc: "2.0", id: 1, method: "getSlot", params: [{commitment}]
         });
-        return response.data.result ? response.data.result.blockhash : null;
+
+        return response.data.result;
     } catch (error) {
-        logWithTimestamp("❌ Error fetching block hash:", error.message);
+        logWithTimestamp(`Error fetching ${commitment} slot:`, error.message);
         return null;
     }
 }
 
-async function checkValidatorHealth() {
-    const validatorSlot = await getValidatorSlot();
-    const finalizedSlot = await getFinalizedSlot();
+async function fetchSlots() {
+    const finalizedSlot = await getSlotWithCommitment("finalized");
+    const confirmedSlot = await getSlotWithCommitment("confirmed");
+    const processedSlot = await getSlotWithCommitment("processed");
 
-    if (validatorSlot === null || finalizedSlot === null || finalizedSlot === 0) {
-        return {status: STATUS_OFFLINE, message: "Validator might be offline or unresponsive"};
+    return {
+        finalizedSlot: finalizedSlot,
+        confirmedSlot: confirmedSlot,
+        processedSlot: processedSlot
+    }
+}
+
+async function fetchRpcHealth() {
+    try {
+        const response = await axios.post(RPC_URL, {
+            jsonrpc: "2.0", id: 1, method: "getHealth"
+        }, { timeout: RPC_TIMEOUT_CONNECTION });
+
+        rpcErrorNotified = false;
+        return response.data;
+    } catch (error) {
+        const logData = `🚨 RPC request failed: ${error.message}`;
+        if (!rpcErrorNotified) {
+            await sendTelegramMessage("🚨 RPC connection failure! Unable to reach the RPC endpoint.", logData);
+            rpcErrorNotified = true;
+        }
+
+        return null;
+    }
+}
+
+async function getHealth() {
+    const data = await fetchRpcHealth();
+
+    if (!data) {
+        return { status: STATUS_OFFLINE };
     }
 
-    const slotLag = finalizedSlot - validatorSlot;
-    if (slotLag > MAX_SLOT_LAG) {
-        return {status: STATUS_LAGGING, message: `Validator is behind by ${slotLag} slots`};
+    if (data.result === "ok") {
+        return { status: STATUS_HEALTHY };
     }
 
-    return {status: STATUS_HEALTHY, validatorSlot, finalizedSlot};
+    if (data.error?.data?.numSlotsBehind > 0) {
+        return {
+            status: STATUS_LAGGING,
+            message: data.error.message,
+            numSlotsBehind: data.error.data.numSlotsBehind ?? 0
+        };
+    }
+
+    return { status: STATUS_HEALTHY_UNKNOWN };
 }
 
 async function monitorValidatorStatus() {
-    const validatorStatus = await checkValidatorHealth();
-
-    if (lastValidatorStatus && lastValidatorStatus.status !== validatorStatus.status) {
-        const now = Date.now();
-
-        // Check if the status is healthy
-        if (validatorStatus.status === STATUS_HEALTHY) {
-            await sendTelegramMessage(`✅ Status: ${STATUS_HEALTHY}`);
-            logWithTimestamp(validatorStatus);
-        }
-        // Check if the status is lagging
-        else if (validatorStatus.status === STATUS_LAGGING) {
-            await sendTelegramMessage(`⚠️ Status: ${STATUS_LAGGING}\n💬 ${validatorStatus.message}`);
-            logWithTimestamp(validatorStatus);
-        }
-        // Check if the status is offline
-        else if (validatorStatus.status === STATUS_OFFLINE) {
-            await sendTelegramMessage(`❌ Status: ${STATUS_OFFLINE}\n💬 ${validatorStatus.message}`);
-            logWithTimestamp(validatorStatus);
-        }
-
-        lastAlertTime = now;
+    if (isProcessing) {
+        logWithTimestamp("⏳ monitorValidatorStatus is already running, skipping...");
+        return;
     }
 
-    lastValidatorStatus = validatorStatus;
-}
+    isProcessing = true;
 
-setInterval(monitorValidatorStatus, CHECK_INTERVAL);
+    try {
+        const healthStatus = await getHealth();
 
-function getUptime() {
-    const uptimeMs = Date.now() - uptimeStart;
-    const uptimeSeconds = Math.floor(uptimeMs / 1000);
-    const hours = Math.floor(uptimeSeconds / 3600);
-    const minutes = Math.floor((uptimeSeconds % 3600) / 60);
-    const seconds = uptimeSeconds % 60;
-    return `${hours}h ${minutes}m ${seconds}s`;
-}
+        let message = "";
 
-function logWithTimestamp(message) {
-    const now = new Date().toISOString();
+        if (lastValidatorStatus === null || lastValidatorStatus !== healthStatus.status) {
+            if (healthStatus.status === STATUS_HEALTHY) {
+                message = `✅ Status: ${STATUS_HEALTHY}`;
+            } else if (healthStatus.status === STATUS_LAGGING) {
+                message = `⚠️ Status: ${STATUS_LAGGING}\n💬 ${healthStatus.message}`;
+            } else if (healthStatus.status === STATUS_HEALTHY_UNKNOWN) {
+                message = `❌ Status: ${STATUS_HEALTHY_UNKNOWN}`;
+            } else if (healthStatus.status === STATUS_OFFLINE) {
+                message = `❌ Status: ${STATUS_OFFLINE}`;
+            }
 
-    if (typeof message === 'object' && message !== null) {
-        message = JSON.stringify(message, null, 2);
+            lastNumSlotsBehind = healthStatus.numSlotsBehind ?? 0;
+            slotsBehindCounter = 0;
+        } else if (healthStatus.status === STATUS_LAGGING && healthStatus.numSlotsBehind !== lastNumSlotsBehind) {
+            if (slotsBehindCounter < MAX_SLOTS_BEHIND_NOTIFICATIONS) {
+                message = `⚠️ Slots behind: ${healthStatus.numSlotsBehind}`;
+                slotsBehindCounter++;
+            } else if (slotsBehindCounter === MAX_SLOTS_BEHIND_NOTIFICATIONS) {
+                message = "⚠️ Validator is behind, we will inform you when the status changes.";
+                slotsBehindCounter++;
+            }
+            lastNumSlotsBehind = healthStatus.numSlotsBehind;
+        }
+
+        if (message) {
+            await sendTelegramMessage(message, healthStatus);
+        }
+
+        lastValidatorStatus = healthStatus.status;
+
+    } catch (err) {
+        console.log(`Error in monitorValidatorStatus: ${err.message}`);
+    } finally {
+        isProcessing = false;
+        setTimeout(monitorValidatorStatus, CHECK_INTERVAL);
     }
-
-    console.log(`[${now}] ${message}`);
 }
 
 function connectWebSocket() {
     if (ws && ws.readyState === WebSocket.OPEN) {
-        logWithTimestamp("✅ WebSocket already connected");
+        logWithTimestamp("WebSocket already connected");
         return;
     }
 
-    logWithTimestamp("🔌 Connecting to WebSocket...");
+    if (wsReconnectAttempts >= MAX_WS_RECONNECT_ATTEMPTS) {
+        logWithTimestamp("Max WebSocket reconnect attempts reached. Stopping reconnection.");
+        return;
+    }
+
+    logWithTimestamp(`🔌 Connecting to WebSocket... (Attempt ${wsReconnectAttempts + 1}/${MAX_WS_RECONNECT_ATTEMPTS})`);
     ws = new WebSocket(WS_URL);
 
     ws.on("open", () => {
-        logWithTimestamp("✅ WebSocket connected");
+        logWithTimestamp("WebSocket connected");
         isWebSocketConnected = true;
         uptimeStart = Date.now();
+        wsReconnectAttempts = 0;
     });
 
     ws.on("close", () => {
-        logWithTimestamp("❌ WebSocket disconnected! Reconnecting...");
+        logWithTimestamp("WebSocket disconnected!");
+
         isWebSocketConnected = false;
-        setTimeout(connectWebSocket, 5000);
+        wsReconnectAttempts += 1;
+
+        if (wsReconnectAttempts < MAX_WS_RECONNECT_ATTEMPTS) {
+            const retryDelay = 15000;
+            logWithTimestamp(`Reconnecting in ${retryDelay / 1000} seconds...`);
+            setTimeout(connectWebSocket, retryDelay);
+        } else {
+            logWithTimestamp("Stopped WebSocket reconnection after maximum attempts.");
+        }
     });
 
     ws.on("error", (err) => {
-        logWithTimestamp("⚠️ WebSocket error:", err.message);
+        logWithTimestamp("WebSocket error: " + err.message);
+        sendTelegramMessage(`🚨 Cannot connect to WebSocket server (Attempt ${wsReconnectAttempts + 1}/${MAX_WS_RECONNECT_ATTEMPTS})`)
+            .catch((err) => logWithTimestamp("Error sending Telegram message for WebSocket error:", err.message));
     });
 }
 
 status.get("/status", async (req, res) => {
-    const validatorStatus = await checkValidatorHealth();
-    const blockHash = await getBlockHash();
-
-    const slotLag = validatorStatus.finalizedSlot - validatorStatus.validatorSlot;
+    const healthStatus = await getHealth();
+    const fetchedSlots = await fetchSlots();
 
     const response = {
-        ...validatorStatus,
-        slotLag: slotLag >= 0 ? slotLag : "N/A",
-        blockHash: validatorStatus.status === STATUS_HEALTHY ? blockHash || "N/A" : "N/A",
+        ...healthStatus,
+        ...fetchedSlots,
+        ...(healthStatus.numSlotsBehind > 0 && {numSlotsBehind: healthStatus.numSlotsBehind}),
         uptime: getUptime(),
         websocket: isWebSocketConnected ? "connected" : "disconnected"
     };
@@ -195,14 +233,21 @@ status.get("/status", async (req, res) => {
 
 connectWebSocket();
 
-try {
-    status.listen(PORT, () => {
-        logWithTimestamp(`🚀 X1 Validator status checker running on ${process.env.LOCAL_HOST}:${PORT}`);
-        sendTelegramMessage('🚀 X1 Validator Status Checker has started! Monitoring the validator status...')
-            .then(() => logWithTimestamp("✅ Startup message sent to Telegram"))
-            .catch((err) => logWithTimestamp("❌ Failed to send startup message:", err.message));
-    });
-} catch (error) {
-    logWithTimestamp("❌ Failed to start server:", error.message);
+status.listen(PORT, async () => {
+    try {
+        await sendTelegramMessage('🚀 X1 Validator Status Checker has started! Monitoring the validator status...');
+        logWithTimestamp(`🚀 X1 Validator status checker running on ${LOCAL_HOST}:${PORT}`);
+
+        if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+            monitorValidatorStatus().catch(err => logWithTimestamp("Error in monitorValidatorStatus:", err.message));
+        }
+
+    } catch (err) {
+        logWithTimestamp("Failed to send startup message:", err.message);
+    }
+});
+
+status.on("error", (err) => {
+    logWithTimestamp("Failed to start server:", err.message);
     process.exit(1);
-}
+});

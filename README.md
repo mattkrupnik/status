@@ -4,14 +4,12 @@ The application provides an HTTP API (`/status`) to access the current status of
 
 ## 📌 Features
 
-- Fetches the current validator slot.
-- Fetches the finalized slot.
-- Fetches the current block hash for the validator's slot.
+- Sends Telegram notifications when the validator status changes.
+- Returns a status of the validator (`healthy`, `lagging`, `healthy unknown`, or `offline`).
+- Checks if the validator is lagging behind (based on slots).
+- Fetches the finalized, confirmed, processed slots.
 - Monitors WebSocket connection to the validator.
 - Tracks application uptime.
-- Checks if the validator is lagging behind (based on slot lag).
-- Returns a status of the validator (`healthy`, `lagging`, or `offline`).
-- Sends Telegram notifications when the validator status changes.
 
 ---
 
@@ -29,6 +27,7 @@ cd status
 
 ### 3️⃣ Install dependencies
 > **Node.js is required to run this application.**
+> https://nodejs.org/en/download
 ```sh
 npm install
 ```
@@ -42,27 +41,31 @@ You can modify `.env` values as needed:
 PORT=3340
 RPC_URL=http://localhost:8899
 WS_URL=ws://localhost:8900
-MAX_SLOT_LAG=100
 LOCAL_HOST=localhost
+MAX_WS_RECONNECT_ATTEMPTS=10
+RPC_TIMEOUT_CONNECTION=180000
 
 # Telegram configuration
 TELEGRAM_BOT_TOKEN=example:1234567890
 TELEGRAM_CHAT_ID=12345667890
 TELEGRAM_API_URL=https://api.telegram.org/bot
 
-# Notification interval and cooldowns
+# Notification interval
 CHECK_INTERVAL=10000
+MAX_SLOTS_BEHIND_NOTIFICATIONS=10
 ```
 ### 5️⃣ Environment Variable Descriptions
 - `PORT`: The port on which the server will run.
 - `RPC_URL`: The RPC URL of the validator to monitor.
 - `WS_URL`: The WebSocket URL for the validator.
-- `MAX_SLOT_LAG`: The maximum acceptable slot lag for the validator.
 - `LOCAL_HOST`: The host of the application.
+- `MAX_WS_RECONNECT_ATTEMPTS`: WS recconect attempts.
+- `RPC_TIMEOUT_CONNECTION`: time the system waits for an RPC response before marking the request as failed. 
 - `TELEGRAM_API_URL`: The Telegram Bot API URL
 - `TELEGRAM_BOT_TOKEN`: The bot token you get from BotFather.
 - `TELEGRAM_CHAT_ID`: The chat ID where messages will be sent.
 - `CHECK_INTERVAL`: How often to check the validator's status (in milliseconds).
+- `MAX_SLOTS_BEHIND_NOTIFICATIONS`: Limits the number of alerts sent when the validator is lagging behind to prevent excessive notifications
 ### 6️⃣ Allow access to the application port
 ```sh
 sudo ufw enable
@@ -71,6 +74,8 @@ sudo ufw reload
 ```
 
 ### 7️⃣ Run the application
+> **PM2 documentation**
+> https://pm2.keymetrics.io/docs/usage/quick-start/
 ```sh
 pm2 start status.js --name validator-status
 ```
@@ -129,6 +134,7 @@ The server will start on the specified port (default: 3340).
 ### 📡 Set Up Telegram Alerts
 - ⚠️ **Status: Lagging** – If the validator is behind too many slots.
 - ✅ **Status: Healthy** – If the validator is synced and healthy.
+- ❌ **Status: Healthy Unknown** – If the validator is unresponsive or healthy is unknown.
 - ❌ **Status: Offline** – If the validator is unresponsive or offline.
 
 ![Example Notification](preview/example_notification.png)
@@ -144,23 +150,24 @@ Fetch the current status of the validator.
 ```json
 {
     "status": "healthy",
-    "message": "Validator is synced",
-    "validatorSlot": 53941760,
+    "message": "Node is behind by 276 slots'",
+    "numSlotsBehind": 276,
     "finalizedSlot": 53941765,
-    "slotLag": 5,
-    "blockHash": "abcd1234efgh5678",
+    "confirmedSlot": 53941765,
+    "processedSlot": 53941760,
     "uptime": "54h 10m 45s",
     "websocket": "connected"
 }
 ```
+![example_api_status.png](preview/example_api_status.png)
 
 **Fields:**
-- `status` – The health status (`healthy`, `lagging`, `offline`).
+- `status` – The health status (`healthy`, `lagging`, `healthy unknown`, `offline`).
 - `message` – Description of the validator’s status.
-- `validatorSlot` – The current validator slot.
+- `numSlotsBehind` - The number of behind slots.
 - `finalizedSlot` – The latest finalized slot.
-- `slotLag` – Difference between finalized and validator slots.
-- `blockHash` – The block hash of the current slot.
+- `confirmedSlot` – The latest confirmed slot.
+- `processedSlot` – The current processed slot.
 - `uptime` – How long the application has been running.
 - `websocket` – Connection status (`connected`, `disconnected`).
 
@@ -175,7 +182,6 @@ The application will attempt to connect to the WebSocket URL specified in `.env`
 ## 🔧 Troubleshooting
 
 - **Port and Firewall Issues** – Ensure the PORT in `.env` is open and accessible (`ufw allow`).
-- **Validator Slot Lag** – If behind by more than `MAX_SLOT_LAG`, status becomes **lagging**. Increase `MAX_SLOT_LAG` if needed.
 - **WebSocket Issues** – Ensure `WS_URL` is correct and accessible. The app will retry every **5 seconds** if disconnected.
 
 ---
